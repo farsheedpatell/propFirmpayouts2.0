@@ -1360,7 +1360,11 @@ The Martingale analysis evaluates trading patterns where a trader increases the 
 """)    
             st.write('---')
             # Função para identificar padrões de Martingale
+            # Função para identificar padrões de Martingale
             def identificar_martingale(grupo):
+                if grupo.empty:
+                    return pd.DataFrame()  # Retorna um DataFrame vazio se o grupo estiver vazio
+
                 grupo = grupo.sort_values(by='trade-date')
                 resultado = []
 
@@ -1388,29 +1392,27 @@ The Martingale analysis evaluates trading patterns where a trader increases the 
                             'side_2': trade_atual['side']
                         })
 
+                # Retorna o DataFrame com os resultados ou um DataFrame vazio, se não houver resultados
                 return pd.DataFrame(resultado)
-        martingale_trades = df.groupby(['TradeDay', 'symbol'], group_keys=False).apply(identificar_martingale).reset_index(drop=True)
-        if martingale_trades.empty:
-            st.dataframe(martingale_trades)
-            st.write("We don't have a martingale object here")
-        else:
-            st.dataframe(martingale_trades)
-            st.write("""
-### How to Interpret the Results
-1. **Tickets and PnL (Profit and Loss):** The ticket_1 and ticket_2 columns show the trade IDs, while pnl_1 and pnl_2 show the profit or loss from each trade. A loss in pnl_1 followed by a trade with pnl_2 indicates that the trader might be using a Martingale strategy.
 
-2. **Lots:** The lots_1 and lots_2 columns display the size of each trade. In many Martingale patterns, the second trade (which aims to recover losses) may involve larger positions (lots_2 > lots_1).
+            # Agrupamento por 'TradeDay' e 'symbol' para identificar padrões de Martingale
+            martingale_trades = df.groupby(['TradeDay', 'symbol'], group_keys=False).apply(identificar_martingale).reset_index(drop=True)
 
-3. **Time Difference:** The tempo_diferenca column shows the time difference between the two trades. A short time interval (e.g., less than 60 seconds) can suggest that the trader reacted quickly after the loss, which is characteristic of Martingale behavior.
+            # Verificar se o DataFrame 'martingale_trades' contém dados antes de processar
+            if not martingale_trades.empty:
+                st.dataframe(martingale_trades)
+                st.write("### How to Interpret the Results")
+                st.write("""
+                    1. **Tickets and PnL (Profit and Loss):** O ticket_1 e ticket_2 mostram os IDs das trades, enquanto pnl_1 e pnl_2 mostram o lucro ou perda de cada trade. Uma perda em pnl_1 seguida de uma trade com pnl_2 pode indicar o uso da estratégia de Martingale.
+                    2. **Lots:** As colunas lots_1 e lots_2 exibem o tamanho de cada trade. Em muitos padrões de Martingale, a segunda trade (que visa recuperar as perdas) pode envolver posições maiores (lots_2 > lots_1).
+                    3. **Time Difference:** A coluna tempo_diferenca mostra a diferença de tempo entre as duas trades. Um curto intervalo de tempo (por exemplo, menos de 60 segundos) pode sugerir que o trader reagiu rapidamente após a perda, o que é característico do comportamento de Martingale.
+                    4. **Symbol and Date:** Essas colunas ajudam a rastrear o ativo específico (symbol) e o dia (data) em que as trades ocorreram.
+                    5. **Cumulative PnL:** A coluna pnl_acumulado_dia mostra o lucro ou perda total acumulado no dia para aquele símbolo.
+                """)
+            else:
+                # Mensagem caso não haja padrões de Martingale detectados
+                st.write("No Martingale Strategies Detected.")
 
-4. **Symbol and Date:** These columns help track the specific asset (symbol) and the day (data) when the trades occurred. They give context to when and in which instruments the Martingale pattern might be happening.
-
-5. **Cumulative PnL:** The pnl_acumulado_dia column shows the total profit or loss for the entire day for that symbol. This helps assess whether the trader is successfully recovering losses or if the Martingale strategy is amplifying the losses.
-
-### Key Insights
-- **Risky Behavior:** A consistent Martingale pattern can indicate risky behavior since increasing position sizes to recover losses may lead to larger and unsustainable risks.
-- **Potential Gambling Patterns:** If many such trades occur, it may suggest the trader is not following a robust trading strategy but is instead relying on luck or high-risk methods.
-""")
 
 
                
