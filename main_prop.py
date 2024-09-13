@@ -67,6 +67,9 @@ def manipulation_data_frame(dataframe):
     df['TradeDay'] = df['trade-date'].apply(lambda x: x.strftime("%d-%m-%Y"))
     df['TradeDay'] = pd.to_datetime(df['TradeDay'], errors='coerce', format='%d-%m-%Y')
     df['ticket'] = df['ticket'].astype(str)
+    df['commissions'] = df['commissions'].fillna(0)
+    df['pnl_liq'] = df['pnl'] - df['commissions']
+    
     return df
 
 def main():
@@ -96,15 +99,34 @@ def main():
     st.sidebar.markdown("---")
 
     if data_file_1 is not None:
-        df = load_data(data_file_1)
-        df = manipulation_data_frame(df)
+        try:
+            df = load_data(data_file_1)
+            df = manipulation_data_frame(df)
+        except Exception as e:
+            st.sidebar.error(f"Error loading the file: {e}")
 
+        st.sidebar.markdown("### Select the date range for the analysis")
+        st.sidebar.markdown(
+            "The analyses will be conducted based on the selected date range. "
+            "Only trades within this range will be included."
+        )
+        start_date = st.sidebar.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
+        end_date = st.sidebar.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
+        
+        start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
+        end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
+        
+        if start_date > end_date:
+            st.sidebar.error("The start date must be earlier than the end date.")
+        else:
+            df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
+        
         with st.sidebar:
             selected_page = option_menu(
                 menu_title="Navigation",
                 options=["Overview", "General Statistics", "Trade Frequency and Execution", 
                         "Trade Duration", "Simultaneos Open Positions","Regular Intervals", "Gambling Behavior", 
-                        "Stop Loss", "Martingale","Consistency","Machine Learning"],
+                        "Stop Loss", "Martingale","Consistency","Risk Score","Machine Learning"],
                 icons=["house", "bar-chart-line", "clock", "hourglass", "calendar", 
                     "play-circle", "stop-circle", "shuffle", "check-circle"],
                 menu_icon="cast",
@@ -128,7 +150,7 @@ def main():
             )
             col1, col2 = st.columns(2)
             with col1:
-                df['cumulative_pnl'] = df['pnl'].cumsum()
+                df['cumulative_pnl'] = df['pnl_liq'].cumsum()
                 fig = px.line(df, x='trade-date', y='cumulative_pnl', title='Cumulative Profit/Loss', 
                               labels={'trade-date':'Trade Date', 'cumulative_pnl':'Cumulative PnL'}, 
                               color_discrete_sequence=['#1e87f7'])
@@ -181,10 +203,10 @@ def main():
             total_trades = len(df1)
             proportion_simultaneous = num_simultaneous_trades / total_trades
 
-            average_profit = df.loc[df['pnl']>0,'pnl'].mean()
-            average_loss = df.loc[df['pnl']<0,'pnl'].mean()
-            risk_return_ratio = (df.loc[df['pnl']>0,'pnl'].mean()) / abs(df.loc[df['pnl']<0,'pnl'].mean()) if (df.loc[df['pnl']<0,'pnl'].mean()) != 0 else float('inf')
-            win_percentage = ((df[df['pnl'] > 0].shape[0])/df.shape[0]) * 100
+            average_profit = df.loc[df['pnl_liq']>0,'pnl_liq'].mean()
+            average_loss = df.loc[df['pnl_liq']<0,'pnl_liq'].mean()
+            risk_return_ratio = (df.loc[df['pnl_liq']>0,'pnl_liq'].mean()) / abs(df.loc[df['pnl_liq']<0,'pnl_liq'].mean()) if (df.loc[df['pnl_liq']<0,'pnl_liq'].mean()) != 0 else float('inf')
+            win_percentage = ((df[df['pnl_liq'] > 0].shape[0])/df.shape[0]) * 100
             loss_percentage = (100 - win_percentage)
 
             st.markdown(f"- Average Trade Duration: {round(df['duration'].mean())} minutes")
@@ -217,7 +239,7 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                frequency_df = df[['TradeDay','pnl']].groupby('TradeDay').count().rename(columns={"pnl":"Frequency"})
+                frequency_df = df[['TradeDay','pnl_liq']].groupby('TradeDay').count().rename(columns={"pnl_liq":"Frequency"})
                 st.write(frequency_df)
                 st.markdown("""
                     **Description:** The table above shows the daily trade frequency, 
@@ -280,14 +302,6 @@ def main():
             fig = px.bar(above_average_df, x=above_average_df.index, y='Frequency',
                          labels={'index': 'Day', 'Frequency': 'Number of Trades'}, template='simple_white')
             st.plotly_chart(fig)
-            st.markdown('---')
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
             st.markdown('---')
 
         elif selected_page == "Trade Duration":
@@ -524,168 +538,223 @@ def main():
             could suggest unfair trading practices in the market.
             """)
             st.write("#### Detais of the trades that had a duration of less than 1 minute")
-            less_1m = df.loc[df['duration']<1,['symbol','pnl','volume','lots','duration','open-price','close-price','TradeDay','ticket']].set_index('TradeDay')
+            less_1m = df.loc[df['duration']<1,['symbol','pnl_liq','volume','lots','duration','open-price','close-price','TradeDay','ticket']].set_index('TradeDay')
             st.write(less_1m)
             pd.options.display.float_format = '{:.2f}'.format
             st.write("#### Describe")
             st.write(less_1m.drop(columns=['ticket']).describe().T)
             st.markdown('---')
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
             st.markdown('---')
 
         elif selected_page == "Simultaneos Open Positions":
             st.markdown("---")
             format_blue("Simultaneos open positions")
             
-            
-            st.write("### Details")
-            # Ordenar o dataframe pelas colunas de tempo de abertura dos trades
             df1 = df.sort_values(by='open-time').reset_index(drop=True)
 
             # Criar um dataframe para armazenar os eventos de abertura e fechamento dos trades
             events = pd.DataFrame({
                 'time': pd.concat([df1['open-time'], df1['close-time']]),
                 'event': ['open'] * len(df1) + ['close'] * len(df1),
-                'ticket': pd.concat([df1['ticket'], df1['ticket']])
+                'ticket': pd.concat([df1['ticket'], df1['ticket']]),
+                'symbol': pd.concat([df1['symbol'], df1['symbol']]),
+                'pnl_liq': pd.concat([df1['pnl_liq'], df1['pnl_liq']]),
+                'TradeDay': pd.concat([df1['TradeDay'], df1['TradeDay']])
             })
 
             # Ordenar os eventos por tempo
             events = events.sort_values('time').reset_index(drop=True)
 
-            # Variável para rastrear o número de trades simultâneos
-            open_trades = 0
-            simultaneous_positions = []
-            open_tickets = []
-
-            # Contador para armazenar tickets abertos simultaneamente
+            # Variável para rastrear trades abertos simultaneamente
+            open_trades = []
             simultaneous_details = []
 
             # Iterar sobre os eventos para calcular os trades simultâneos
-            for index, row in events.iterrows():
+            for _, row in events.iterrows():
                 if row['event'] == 'open':
-                    open_trades += 1
-                    open_tickets.append(row['ticket'])  # Adiciona o ticket à lista de abertos
-                else:
-                    open_tickets.remove(row['ticket'])  # Remove o ticket da lista de abertos
-                    open_trades -= 1
+                    if row['ticket'] not in open_trades:  # Evita duplicidade
+                        open_trades.append(row['ticket'])  # Adiciona o ticket à lista de abertos
+                        if len(open_trades) > 1:  # Verifica se há mais de um trade simultâneo
+                            simultaneous_details.append({
+                                'time': row['time'],
+                                'open_trades': open_trades.copy(),
+                                'symbol': row['symbol'],
+                                'TradeDay': row['TradeDay']
+                            })
+                elif row['event'] == 'close':
+                    if row['ticket'] in open_trades:
+                        open_trades.remove(row['ticket'])  # Remove o ticket da lista de abertos
 
-                simultaneous_positions.append(open_trades)
+            # Criar DataFrame com os trades simultâneos
+            simultaneous_trades_df = pd.DataFrame(simultaneous_details)
+
+            # Função para gerar o relatório consolidado de trades simultâneos
+            def generate_consolidated_report(df, simultaneous_trades):
+                report = []
                 
-                # Armazena detalhes se houver trades simultâneos
-                if open_trades > 1:
-                    simultaneous_details.append({
-                        'Ticket': row['ticket'],
-                        'Open Trades Tickets': open_tickets.copy(),
-                        'Time': row['time']
+                # Agrupar por símbolo e dia
+                grouped = simultaneous_trades.groupby(['symbol', 'TradeDay'])
+                
+                for (symbol, day), group in grouped:
+                    tickets_flagged = set()  # Para armazenar tickets únicos
+                    total_pnl = 0  # Acumulador de PnL
+                    
+                    # Iterar sobre os trades simultâneos no grupo
+                    for _, row in group.iterrows():
+                        for ticket in row['open_trades']:
+                            if ticket not in tickets_flagged:  # Evita duplicidade de tickets
+                                tickets_flagged.add(ticket)
+                                trade_info = df[df['ticket'] == ticket].iloc[0]
+                                total_pnl += trade_info['pnl_liq']  # Somar PnL do ticket
+                    
+                    # Adicionar dados ao relatório
+                    report.append({
+                        'Symbol': symbol,
+                        'TradeDay': day,
+                        'Tickets Flagged': list(tickets_flagged),
+                        'Total PnL': total_pnl
                     })
-
-            # Adiciona ao dataframe original a contagem de posições simultâneas
-            df1['simultaneous_positions'] = pd.Series(simultaneous_positions[:len(df1)])
-
-            # Filtrar trades simultâneos
-            simultaneous_trades_df = df1[df1['simultaneous_positions'] > 1]
-            st.write(simultaneous_trades_df[['ticket','open-time','close-time','simultaneous_positions']])
-            # Gerar relatório detalhado de trades simultâneos
-            for index, row in simultaneous_trades_df.iterrows():
-                details = [d for d in simultaneous_details if row['ticket'] in d['Open Trades Tickets']]
                 
-                if details:
-                    format_blue(f"\n     {row['TradeDay']}")
-                    for i, detail in enumerate(details):
-                        ticket_info = df1[df1['ticket'] == detail['Ticket']].iloc[0]
-                        previous_ticket = details[i - 1]['Ticket'] if i > 0 else 'None (first in the list)'
-                        time_diff = (detail['Time'] - details[i - 1]['Time']).total_seconds() if i > 0 else 'N/A'
-                        st.markdown(f"**Ticket:** {ticket_info['ticket']}")
-                        st.markdown(f"**Previous Trade Ticket:** {previous_ticket}")
-                        st.markdown(f"**Open Time:** {ticket_info['open-time']}")
-                        st.markdown(f"**Close Time:** {ticket_info['close-time']}")
-                        st.markdown(f"**Open Price:** {ticket_info['open-price']}")
-                        st.markdown(f"**Close Price:** {ticket_info['close-price']}")
-                        st.markdown(f"**Symbol:** {ticket_info['symbol']}")
-                        st.markdown(f"**PNL:** ${ticket_info['pnl']:.2f}")
-                        st.markdown(f"Time Difference from Previous Trade: {time_diff} seconds")
-                        st.markdown("---")
-            # Visualization 1: Line Chart of Simultaneous Positions Over Time
-            st.write("### Line Chart of Simultaneous Positions Over Time")
-            fig1 = px.line(df1, x='open-time', y='simultaneous_positions', title='Simultaneous Positions Over Time')
-            fig1.update_layout(xaxis_title='Time', yaxis_title='Simultaneous Positions', template='plotly_dark')
+                # Retornar DataFrame do relatório consolidado
+                return pd.DataFrame(report)
+
+            # Gerar relatório consolidado dos trades simultâneos
+            consolidated_report = generate_consolidated_report(df1, simultaneous_trades_df)
+
+            # Exibir relatório
+            st.write(consolidated_report)
+           #------------------------------------------------------------------------- 
+            # Certifique-se de que as colunas 'open-time' e 'close-time' estão no formato datetime
+            df['open-time'] = pd.to_datetime(df['open-time'])
+            df['close-time'] = pd.to_datetime(df['close-time'])
+
+            # Criar colunas naive para horas de abertura e fechamento (remover timezone)
+            df['open-time-naive'] = df['open-time'].dt.tz_localize(None)
+            df['close-time-naive'] = df['close-time'].dt.tz_localize(None)
+
+            # Calcular a duração do trade em horas
+            df['duration_hours'] = (df['close-time-naive'] - df['open-time-naive']).dt.total_seconds() / 3600
+
+            # Criar o gráfico com Plotly
+            fig = go.Figure()
+
+            # Adicionar cada trade como uma barra horizontal
+            for i, row in df.iterrows():
+                fig.add_trace(go.Bar(
+                    y=[f'Ticket {row["ticket"]}'],  # Cada barra corresponde ao ticket de um trade
+                    x=[row['duration_hours']],  # A duração do trade em horas
+                    base=row['open-time-naive'].timestamp() / 3600,  # Converte o timestamp para horas
+                    orientation='h',  # Barras horizontais
+                    name=f'Trade {i+1}',
+                    marker=dict(color=px.colors.sequential.Viridis[i % len(px.colors.sequential.Viridis)]),  # Usar uma cor da paleta Viridis
+                    hovertemplate=(
+                        f'Ticket: {row["ticket"]}<br>'
+                        f'Side: {row["side"]}<br>'
+                        f'Symbol: {row["symbol"]}<br>'
+                        f'Lots: {row["lots"]}<br>'
+                        f'PnL: {row["pnl_liq"]}<br>'
+                        f'Duration (Hours): {row["duration_hours"]:.2f}<br>'
+                        f'Open Time: {row["open-time-naive"]}<br>'
+                        f'Close Time: {row["close-time-naive"]}<br>'
+                        '<extra></extra>'
+                    )  # Informações adicionais ao passar o mouse sobre cada barra
+                ))
+
+            # Atualizar layout do gráfico
+            fig.update_layout(
+                title='Trade Durations and Overlaps',
+                xaxis_title='Trade Duration (Hours)',  # Eixo X mostrando a duração em horas
+                yaxis_title='Trades',  # Eixo Y com os tickets dos trades
+                yaxis=dict(
+                    showticklabels=False  # Ocultar rótulos do eixo Y
+                ),
+                showlegend=False,  # Não mostrar a legenda
+                height=800
+            )
+
+            # Exibir o gráfico no Streamlit
+            st.plotly_chart(fig)
+            #----------------------------------------------
+            
+            #---------
+            # Explicação para o gráfico
+            st.write("""
+            **How to use this chart:**
+            This chart shows the duration of each trade, represented by horizontal bars. The length of each bar indicates how long a trade was open, in hours. Use this to easily identify overlapping trades and analyze the performance of each trade based on its profit/loss (PnL) and other details available in the hover information.
+            """)
+            
+            st.write('---')
+            fig1 = px.bar(
+                consolidated_report, 
+                x='TradeDay', 
+                y='Total PnL', 
+                color='Symbol',color_continuous_scale='Blues', 
+                title='Total PnL by Symbol and Trade Day for Simultaneous Positions',
+                labels={
+                    'TradeDay': 'Trade Day',
+                    'Total PnL': 'Total Profit and Loss (PnL)',
+                    'Symbol': 'Symbol'
+                },
+                hover_data=['Tickets Flagged']
+            )
+
+            fig1.update_layout(
+                xaxis_title='Trade Day',
+                yaxis_title='Total PnL',
+                title_x=0.5,  # Center the title
+                hovermode="x unified"  # Show all hover info for each x value
+            )
+
             st.plotly_chart(fig1)
 
-            # Description for Line Chart
-            st.markdown("""
-            **Description:** This line chart displays the number of simultaneous positions over time. A significant increase may indicate 
-            that multiple trades are being opened simultaneously, possibly signaling the use of a martingale strategy or other multi-trade approaches.
+            # Explanation for the chart
+            st.write("""
+            **How to use this chart:**
+            This bar chart displays the total Profit and Loss (PnL) for each trade day, segmented by the trading symbol. Hover over any bar to see additional details, including the tickets flagged for simultaneous open trades on that particular day and symbol. 
+            This chart helps you quickly assess which trade days and symbols had the highest or lowest PnL from simultaneous positions.
             """)
 
-            # Visualization 2: Heatmap of Simultaneous Positions by Hour and Day of the Week
-            st.write("### Heatmap of Simultaneous Positions by Hour and Day of the Week")
-            heatmap_data = df1.groupby(['hour_of_day', 'day_of_week'])['simultaneous_positions'].mean().reset_index()
+            heatmap_data = consolidated_report.pivot_table(
+                index='Symbol', 
+                columns='TradeDay', 
+                values='Tickets Flagged', 
+                aggfunc='count', 
+                fill_value=0
+            )
 
-            fig2 = px.density_heatmap(heatmap_data, x='hour_of_day', y='day_of_week', z='simultaneous_positions', 
-                                    title='Simultaneous Positions by Hour and Day of the Week',
-                                    color_continuous_scale='Blues')
-            fig2.update_layout(xaxis_title='Hour of the Day', yaxis_title='Day of the Week', template='plotly_dark')
+            # Criar o heatmap usando plotly
+            fig2 = go.Figure(
+                data=go.Heatmap(
+                    z=heatmap_data.values, 
+                    x=heatmap_data.columns, 
+                    y=heatmap_data.index, 
+                    colorscale='Blues',
+                    hoverongaps=False
+                )
+            )
+
+            fig2.update_layout(
+                title='Frequency of Simultaneous Trades by Symbol and Trade Day',
+                xaxis_title='Trade Day',
+                yaxis_title='Symbol',
+                title_x=0.5,  # Centralizar o título
+            )
+
             st.plotly_chart(fig2)
 
-            # Description for Heatmap
-            st.markdown("""
-            **Description:** This heatmap reveals the density of simultaneous positions distributed across different hours of the day 
-            and days of the week. It highlights critical moments when multiple trades are being executed.
+            # Explicação para o heatmap
+            st.write("""
+            **How to use this chart:**
+            This heatmap represents the number of simultaneous open trades grouped by trading symbol and trade day. Each cell's color indicates the number of flagged simultaneous trades, with darker colors representing more simultaneous positions. Use this chart to identify trading patterns where multiple trades occurred simultaneously for specific symbols on particular days.
             """)
-
-            # Visualization 3: Scatter Plot of PNL vs. Volume in Simultaneous Trades
-            st.write("### Scatter Plot of PNL vs. Volume in Simultaneous Trades")
-            fig3 = px.scatter(simultaneous_trades_df, x='volume', y='pnl', color='symbol', 
-                            title='PNL vs. Volume in Simultaneous Trades',
-                            labels={'volume': 'Volume', 'pnl': 'PNL'},
-                            hover_data=['ticket', 'open-time'])
-            fig3.update_traces(marker=dict(size=12, line=dict(width=2, color='DarkSlateGrey')))
-            st.plotly_chart(fig3)
-
-            # Description for Scatter Plot
-            st.markdown("""
-            **Description:** This scatter plot visualizes the relationship between profit/loss (PNL) and trade volume for simultaneous trades. 
-            Different colors represent different symbols, and larger bubbles may indicate high volatility in these trades.
-            """)
-
-            # Visualization 4: Histogram of Trade Duration for Simultaneous Trades
-            st.write("### Histogram of Trade Duration for Simultaneous Trades")
-            fig4 = px.histogram(simultaneous_trades_df, x='duration', title='Duration of Simultaneous Trades')
-            fig4.update_layout(xaxis_title='Duration (minutes)', yaxis_title='Frequency', template='plotly_dark')
-            st.plotly_chart(fig4)
-
-            # Description for Histogram
-            st.markdown("""
-            **Description:** This histogram shows the distribution of trade durations for simultaneous trades. 
-            Longer durations could indicate trades held for extended periods, which may be linked to specific trading strategies.
-            """)
-
-            # Visualization 5: Histogram of Simultaneous Trades by Symbol
-            st.write("### Histogram of Simultaneous Trades by Symbol")
-            fig5 = px.histogram(simultaneous_trades_df, x='symbol', title='Distribution of Simultaneous Trades by Symbol')
-            fig5.update_layout(xaxis_title='Symbol', yaxis_title='Number of Trades', template='plotly_dark')
-            st.plotly_chart(fig5)
-
-            # Description for Symbol Histogram
-            st.markdown("""
-            **Description:** This histogram illustrates the distribution of simultaneous trades by symbol. 
-            If a particular asset is being traded at high volumes, it may indicate manipulation or special strategies.
-            """)
-
             # Adding the 'time_diff' column to the dataframe
             df['time_diff'] = df['open-time'].diff().dt.total_seconds()
 
             # Visualization 6: Scatter Plot of Time Difference Between Trades vs. PNL
             st.write("### Scatter Plot of Time Difference Between Trades vs. PNL")
-            fig6 = px.scatter(df, x='time_diff', y='pnl', color='symbol', 
+            fig6 = px.scatter(df, x='time_diff', y='pnl_liq', color='symbol', 
                             title='Time Difference Between Trades vs. PNL',
-                            labels={'time_diff': 'Time Difference (seconds)', 'pnl': 'PNL'})
+                            labels={'time_diff': 'Time Difference (seconds)', 'pnl_liq': 'PNL'})
             st.plotly_chart(fig6)
 
             # Description for Time Difference Scatter Plot
@@ -706,24 +775,6 @@ def main():
             A high frequency of short intervals between trades may indicate rapid market movements or automated trading systems.
             """)
 
-            # Visualization 8: Line Chart of Time Difference Between Trades Over Time
-            st.write("### Line Chart of Time Difference Between Trades Over Time")
-            fig8 = px.line(df, x='open-time', y='time_diff', title='Evolution of Time Difference Between Trades Over Time')
-            fig8.update_layout(xaxis_title='Time', yaxis_title='Time Difference (seconds)', template='plotly_dark')
-            st.plotly_chart(fig8)
-
-            # Description for Time Difference Line Chart
-            st.markdown("""
-            **Description:** This line chart tracks the time difference between trades over time. 
-            A decrease in time intervals between trades could suggest periods of heightened trading activity.
-            """)
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
             st.markdown('---')
 
         elif selected_page == "Gambling Behavior":
@@ -781,7 +832,7 @@ def main():
                 """)
 
             st.subheader("Trade Volumes vs. Trade Outcomes")
-            fig = px.scatter(df, x='lots', y='pnl', template='simple_white')
+            fig = px.scatter(df, x='lots', y='pnl_liq', template='simple_white')
             fig.update_layout(xaxis_title='Volume (lots)', yaxis_title='Profit/Loss')
             st.plotly_chart(fig)
             st.write("""
@@ -865,13 +916,6 @@ def main():
             """)
             fig = px.bar(data_frame=avg_volume_per_day,x=avg_volume_per_day.index,y='lots')
             st.plotly_chart(fig)
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
             st.markdown('---')
         
         elif selected_page == "Regular Intervals":
@@ -908,62 +952,42 @@ def main():
             df['trade-date'] = pd.to_datetime(df['trade-date'])
             df['time_diff'] = df['trade-date'].diff().dt.total_seconds()
 
-            # Define os intervalos de tempo em segundos
-            intervals_seconds = [1, 5, 15, 30, 45, 60, 120, 240, 480, 960, 3600]
+            intervals_seconds = [0,1, 5, 15, 30, 45, 60, 120, 240, 480, 960, 3600,df['time_diff'].max()]
 
-            
             results = []
 
-            # Loop para calcular as métricas para cada intervalo
             for interval in intervals_seconds:
-                interval_range = range(0, interval + 1, 1)  # Intervalos de 1 segundo para precisão
+                regular_trades = df[df['time_diff'].between(0, interval)]
+                
+                count_trades = regular_trades.shape[0]
+                total_trades = df.shape[0]
+                regular_percentage = (count_trades / total_trades) * 100
+                average_lots = regular_trades['lots'].mean() if count_trades > 0 else None
 
-                interval_results = []
+                results.append({
+                    'Interval (seconds)': f'0 to {interval}',
+                    'Total Trades': total_trades,
+                    'Regular Trades': count_trades,
+                    'Percentage of Regular Trades': regular_percentage,
+                    'Average Lots': average_lots
+                })
+                
+            results_df = pd.DataFrame(results)
 
-                for start in interval_range:
-                    end = start + 1
-                    regular_trades = df[df['time_diff'].between(start, end)]
-                    
-                    # Calcula as estatísticas
-                    count_trades = regular_trades.shape[0]
-                    total_trades = df.shape[0]
-                    regular_percentage = (count_trades / total_trades) * 100
-                    average_lots = regular_trades['lots'].mean() if count_trades > 0 else None
-                    
-                    interval_results.append({
-                        'Interval Start (seconds)': start,
-                        'Interval End (seconds)': end,
-                        'Total Trades': total_trades,
-                        'Regular Trades': count_trades,
-                        'Percentage of Regular Trades': regular_percentage,
-                        'Average Lots': average_lots
-                    })
-                
-                # Converte resultados em um DataFrame
-                results_df = pd.DataFrame(interval_results)
-                
-                # Exibe a tabela com os resultados para o intervalo atual
-                blue(f"\n Interval from 0 to {interval} seconds")
-                st.markdown("\n#### Detailed Breakdown of Trades Executed at Regular Intervals:")
-                st.dataframe(results_df)
-                
-                # Plota gráficos comparativos
-                fig1 = px.bar(results_df, x='Interval End (seconds)', y='Percentage of Regular Trades',template='plotly_dark',
-                            title=f'Percentage of Trades Executed at Regular Intervals (0 to {interval} seconds)',
-                            labels={'Interval End (seconds)': 'Interval End (Seconds)', 'Percentage of Regular Trades': 'Percentage (%)'})
-                st.plotly_chart(fig1)
-                
-                fig2 = px.bar(results_df, x='Interval End (seconds)', y='Average Lots',template='plotly_dark',
-                            title=f'Average Lots for Trades Executed at Regular Intervals (0 to {interval} seconds)',
-                            labels={'Interval End (seconds)': 'Interval End (Seconds)', 'Average Lots': 'Average Lots'})
-                st.plotly_chart(fig2)
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
+            st.write("\n### Trades Executed at Regular Intervals")
+            st.write(results_df)
+
+            fig1 = px.bar(results_df, x='Interval (seconds)', y='Percentage of Regular Trades', template='simple_white',color_continuous_scale='Blues',
+                        title='Percentage of Trades Executed at Regular Intervals',
+                        labels={'Interval (seconds)': 'Interval (Seconds)', 'Percentage of Regular Trades': 'Percentage (%)'})
+            st.plotly_chart(fig1)
+
+            fig2 = px.bar(results_df, x='Interval (seconds)', y='Average Lots', template='simple_white',color_continuous_scale='Blues',
+                        title='Average Lots for Trades Executed at Regular Intervals',
+                        labels={'Interval (seconds)': 'Interval (Seconds)', 'Average Lots': 'Average Lots'})
+            st.plotly_chart(fig2)
+            # Loop para calcular as métricas para cada intervalo
+            
             st.markdown('---')
 
         elif selected_page == "Stop Loss":
@@ -998,8 +1022,23 @@ def main():
             
             # Mostrar tabela de tickets sem Stop Loss
             st.write("### Ticket Details for Trades Without Stop Loss")
-            st.dataframe(trades_without_sl[['ticket']].reset_index(drop=True))
-            
+            df_no_sl = df[df['sl'].isna() | (df['sl'] == '')]
+
+            # Agrupa por dia e calcula o PNL acumulado
+            grouped_no_sl = df_no_sl.groupby('TradeDay').agg({
+                'ticket': lambda x: ', '.join(map(str, x)),
+                'pnl': 'sum'
+            }).reset_index()
+
+            # Renomeia as colunas para melhor compreensão
+            grouped_no_sl.columns = ['TradeDay', 'Tickets IDs', 'PNL Acumulado']
+
+            # Ordena o DataFrame por dia
+            grouped_no_sl = grouped_no_sl.sort_values(by='TradeDay').reset_index(drop=True)
+
+            # Exibe o DataFrame resultante
+            st.write(grouped_no_sl)
+
             # Visualizações
             st.subheader("Trade Distribution by Symbol for Trades Without Stop Loss")
             
@@ -1021,13 +1060,6 @@ def main():
             fig_duration = px.box(trades_without_sl, y='duration', title='Trade Duration Analysis (Without Stop Loss)',
                                 labels={'duration': 'Duration (seconds)'})
             st.plotly_chart(fig_duration)
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
             st.markdown('---')
 
         elif selected_page == "Consistency":
@@ -1052,15 +1084,15 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                consistency = df[['TradeDay', 'pnl']].groupby('TradeDay').sum()
+                consistency = df[['TradeDay', 'pnl_liq']].groupby('TradeDay').sum()
                 st.write("### Daily Profit and Loss Summary")
                 st.dataframe(consistency)
             
             with col2:
-                total_profits = round(consistency.loc[consistency['pnl'] > 0].sum(axis=0).tolist()[0], 2)
+                total_profits = round(consistency.loc[consistency['pnl_liq'] > 0].sum(axis=0).tolist()[0], 2)
                 cumulative_pnl = consistency.sum(axis=0).tolist()[0]
-                most_profitable_day = consistency['pnl'].max()
-                most_profitable_day_info = consistency[consistency['pnl'] == most_profitable_day]
+                most_profitable_day = consistency['pnl_liq'].max()
+                most_profitable_day_info = consistency[consistency['pnl_liq'] == most_profitable_day]
                 percentage_of_total_profits = round((most_profitable_day / total_profits) * 100, 2)
                 
                 st.write(f"**Total Profits:** ${total_profits}")
@@ -1072,43 +1104,168 @@ def main():
             st.subheader("Visualizations of Trading Consistency")
 
             # Gráfico de linha para mostrar a evolução diária do PnL
-            fig_daily_pnl = px.line(consistency, x=consistency.index, y='pnl', title='Daily Profit and Loss Over Time',
-                                labels={'TradeDay': 'Date', 'pnl': 'PnL'})
+            fig_daily_pnl = px.line(consistency, x=consistency.index, y='pnl_liq', title='Daily Profit and Loss Over Time',
+                                labels={'TradeDay': 'Date', 'pnl_liq': 'PnL'})
             st.plotly_chart(fig_daily_pnl)
             
             # Gráfico de barras para mostrar a comparação dos lucros diários
-            fig_daily_pnl_bar = px.bar(consistency, x=consistency.index, y='pnl', title='Daily PnL Comparison',
-                                    labels={'TradeDay': 'Date', 'pnl': 'PnL'})
+            fig_daily_pnl_bar = px.bar(consistency, x=consistency.index, y='pnl_liq', title='Daily PnL Comparison',
+                                    labels={'TradeDay': 'Date', 'pnl_liq': 'PnL'})
             st.plotly_chart(fig_daily_pnl_bar)
 
             # Distribuição do PnL por Dia da Semana
             df['day_of_week'] = df['TradeDay'].dt.day_name()
-            weekly_pnl = df.groupby('day_of_week')['pnl'].sum().reset_index()
-            fig_weekly_pnl = px.bar(weekly_pnl, x='day_of_week', y='pnl', title='Total PnL by Day of the Week',
-                                    labels={'day_of_week': 'Day of the Week', 'pnl': 'Total PnL'})
+            weekly_pnl = df.groupby('day_of_week')['pnl_liq'].sum().reset_index()
+            fig_weekly_pnl = px.bar(weekly_pnl, x='day_of_week', y='pnl_liq', title='Total PnL by Day of the Week',
+                                    labels={'day_of_week': 'Day of the Week', 'pnl_liq': 'Total PnL'})
             st.plotly_chart(fig_weekly_pnl)
 
             # Histograma do PnL Diário
-            fig_histogram_pnl = px.histogram(consistency, x='pnl', nbins=30, title='Distribution of Daily PnL',
-                                            labels={'pnl': 'Daily PnL'})
+            fig_histogram_pnl = px.histogram(consistency, x='pnl_liq', nbins=30, title='Distribution of Daily PnL',
+                                            labels={'pnl_liq': 'Daily PnL'})
             st.plotly_chart(fig_histogram_pnl)
 
             # Box Plot do PnL Diário
-            fig_box_pnl = px.box(consistency, y='pnl', title='Box Plot of Daily PnL',
-                                labels={'pnl': 'Daily PnL'})
+            fig_box_pnl = px.box(consistency, y='pnl_liq', title='Box Plot of Daily PnL',
+                                labels={'pnl_liq': 'Daily PnL'})
             st.plotly_chart(fig_box_pnl)
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
             st.markdown('---')
 
         elif selected_page == "Machine Learning":
             st.write('---')
             st.write("### Working...")
+
+        elif selected_page == "Risk Score":
+            st.write('---')
+            def get_risk_manager_input():
+                format_blue("Risk Assessment Input")
+
+                # Categoria: Trading Style Compliance
+                st.subheader("Trading Style Compliance (0-10):")
+                st.markdown("""- 0-2: Highly consistent and disciplined""")
+                st.markdown("- 3-5: Generally consistent, minor irregularities")
+                st.markdown('- 6-8: Significant inconsistencies')        
+                st.markdown(' - 9-10: Erratic or highly risky')       
+                
+                trading_style = st.slider("Enter score for Trading Style Compliance:", 0, 10)
+
+                # Categoria: Account Management Adherence
+                st.subheader("Account Management Adherence (0-10)")
+                st.write("- 0-2: Excellent management\n")
+                st.write("- 3-5: Good management, occasional issues\n")
+                st.write("- 6-8: Poor management, frequent issues\n")
+                st.write("- 9-10: Severe mismanagement")
+                account_management = st.slider("Enter score for Account Management Adherence:", 0, 10)
+
+                # Categoria: Prohibited Practices Risk
+                st.subheader("Prohibited Practices Risk (0-10)")
+                st.write("- 0-2: No evidence of prohibited practices\n")
+                st.write("- 3-5: Suspicious activity, no clear violations\n")
+                st.write("- 6-8: Clear, infrequent violations\n")
+                st.write("- 9-10: Frequent/severe violations")
+                prohibited_practices = st.slider("Enter score for Prohibited Practices Risk:", 0, 10)
+
+                # Categoria: Gambling Behavior Indicators
+                st.subheader("Gambling Behavior Indicators (0-10)")
+                st.write("0-2: No signs of gambling behavior\n")
+                st.write("3-5: Occasional high-risk behavior\n")
+                st.write("6-8: Frequent high-risk behavior\n")
+                st.write("9-10: Consistent gambling-like behavior")
+                gambling_behavior = st.slider("Enter score for Gambling Behavior Indicators:", 0, 10)
+
+                return trading_style, account_management, prohibited_practices, gambling_behavior
+
+            # Função para calcular o score de risco
+            def calculate_risk_score(trading_style, account_management, prohibited_practices, gambling_behavior):
+                # Pesos para cada categoria
+                trading_style_weight = 0.3
+                account_management_weight = 0.2
+                prohibited_practices_weight = 0.3
+                gambling_behavior_weight = 0.2
+
+                # Cálculo do score final com base nos pesos
+                overall_risk_score = (
+                    (trading_style * trading_style_weight) +
+                    (account_management * account_management_weight) +
+                    (prohibited_practices * prohibited_practices_weight) +
+                    (gambling_behavior * gambling_behavior_weight)
+                )
+
+                return overall_risk_score
+
+            # Função para determinar a ação com base no score
+            def determine_payout_action(risk_score):
+                if 0 <= risk_score <= 3:
+                    return {
+                        "Risk Level": "Low",
+                        "Primary Action": "Pay the trader",
+                        "Secondary Action": "None",
+                        "Notes": "Regular monitoring continues"
+                    }
+                elif 3.1 <= risk_score <= 4:
+                    return {
+                        "Risk Level": "Low-Moderate",
+                        "Primary Action": "Pay the trader",
+                        "Secondary Action": "Issue a warning",
+                        "Notes": "Specify areas of concern in the warning"
+                    }
+                elif 4.1 <= risk_score <= 6:
+                    return {
+                        "Risk Level": "Moderate",
+                        "Primary Action": "Pay with a deduction",
+                        "Secondary Action": "Increased monitoring",
+                        "Notes": "Deduction percentage based on severity of issues"
+                    }
+                elif 6.1 <= risk_score <= 7:
+                    return {
+                        "Risk Level": "High-Moderate",
+                        "Primary Action": "Reject payout, allow trading",
+                        "Secondary Action": "Implement restrictions",
+                        "Notes": "Specify conditions for future payouts"
+                    }
+                elif 7.1 <= risk_score <= 10:
+                    return {
+                        "Risk Level": "High",
+                        "Primary Action": "Reject and ban",
+                        "Secondary Action": "Close account",
+                        "Notes": "Document reasons thoroughly"
+                    }
+                else:
+                    return {
+                        "Risk Level": "Invalid score",
+                        "Primary Action": "None",
+                        "Secondary Action": "None",
+                        "Notes": "Risk score is out of range"
+                    }
+
+            # Função principal para rodar o processo de avaliação de risco
+            def run_risk_assessment():
+                format_blue("Risk Assessment Dashboard")
+                st.write("---")
+
+                # Coletar entradas do gestor de risco
+                trading_style_score, account_management_score, prohibited_practices_score, gambling_behavior_score = get_risk_manager_input()
+
+                # Calcular o score geral
+                overall_risk_score = calculate_risk_score(trading_style_score, account_management_score, prohibited_practices_score, gambling_behavior_score)
+
+                # Determinar a ação baseada no score
+                action_matrix = determine_payout_action(overall_risk_score)
+
+                # Exibir os resultados
+                blue("Risk Assessment Results")
+                st.write(f"**Overall Risk Score**: {overall_risk_score:.2f}")
+                st.write("**Action Matrix**:")
+
+                for key, value in action_matrix.items():
+                    st.write(f"**{key}:** {value}")
+
+            # Executar o processo de avaliação de risco
+
+            run_risk_assessment()
+
+
+
 
         elif selected_page == "Martingale":
             st.write('---')
@@ -1164,14 +1321,6 @@ def main():
             if not martingale_df.empty:
                 st.subheader("Visualizations")
 
-                # Gráfico de tempo entre trades e diferença de lots
-                st.write("#### Time Between Trades vs Difference in Lots")
-                fig_time_lots = px.scatter(martingale_df, x='time_diff', y='lots_diff', 
-                                        title='Time Between Trades vs Difference in Lots',
-                                        labels={'time_diff': 'Time Between Trades (Seconds)', 'lots_diff': 'Difference in Lots'},
-                                        template='plotly_dark')
-                st.plotly_chart(fig_time_lots)
-
                 # Gráfico de distribuição de trades por símbolo
                 st.write("#### Number of Potential Trades by Symbol")
                 symbol_counts = martingale_df['symbol'].value_counts().reset_index()
@@ -1190,7 +1339,7 @@ def main():
 
             # Identifica padrões de martingale: Trades com aumento de volume após perdas
             def identify_martingale(df):
-                df['prev_pnl'] = df.groupby('symbol')['pnl'].shift(1)
+                df['prev_pnl'] = df.groupby('symbol')['pnl_liq'].shift(1)
                 df['prev_lots'] = df.groupby('symbol')['lots'].shift(1)
                 df['is_loss'] = df['prev_pnl'] < 0
                 df['lots_increase'] = df['lots'] > df['prev_lots']
@@ -1202,47 +1351,69 @@ def main():
             martingale_candidates = identify_martingale(df)
 
             st.subheader("Additional Martingale Analysis")
+            st.write("""
+The Martingale analysis evaluates trading patterns where a trader increases the size of the position after a loss in an attempt to recover losses by making a profitable trade in the opposite direction. This strategy is often used in gambling and, in trading, can indicate riskier behavior. Specifically, it looks for the following conditions:
 
-            # Simultaneous Trades
-            st.write("### Simultaneous Trades")
-            st.write(f"Total Number of Trades: {df.shape[0]}")
-            st.write(f"Number of Simultaneous Trades (within 60 seconds): {simultaneous_trades.shape[0]}")
-            st.dataframe(simultaneous_trades[['trade-date', 'symbol', 'lots', 'time_diff_seconds']].reset_index(drop=True))
+1. **Loss Followed by Opposite Trade:** The analysis checks if a trade resulting in a loss is immediately followed by another trade in the opposite direction.
+2. **Short Time Interval:** The second trade must happen within a short time window (e.g., within 60 seconds) after the losing trade.
+3. **Side Reversal:** The direction of the trade (buy/sell) changes, indicating a potential attempt to reverse the initial losing position.            
+""")    
+            st.write('---')
+            # Função para identificar padrões de Martingale
+            def identificar_martingale(grupo):
+                grupo = grupo.sort_values(by='trade-date')
+                resultado = []
 
-            # Martingale Patterns
-            st.write("### Potential Martingale Patterns")
-            st.write(f"Number of Trades Matching Martingale Pattern: {martingale_candidates.shape[0]}")
-            st.dataframe(martingale_candidates[['trade-date', 'symbol', 'lots', 'prev_pnl', 'prev_lots']].reset_index(drop=True))
+                for i in range(1, len(grupo)):
+                    trade_anterior = grupo.iloc[i - 1]
+                    trade_atual = grupo.iloc[i]
 
-            # Gráficos de visualização
+                    # Calcula a diferença de tempo entre as trades
+                    tempo_diferenca = (trade_atual['trade-date'] - trade_anterior['trade-date']).total_seconds()
 
-            # Gráfico de volume de trades simultâneos
-            st.write("#### Distribution of Time Between Simultaneous Trades")
-            fig_simultaneous_trades = px.histogram(simultaneous_trades, x='time_diff_seconds', nbins=60,
-                                                title='Distribution of Time Between Simultaneous Trades',
-                                                labels={'time_diff_seconds': 'Time Difference (Seconds)'},
-                                                template='plotly_dark')
-            st.plotly_chart(fig_simultaneous_trades)
+                    # Verifica se há um padrão de Martingale (perda seguida por trade na direção oposta em curto intervalo de tempo)
+                    if trade_anterior['pnl_category'] == 'loss' and trade_atual['side'] != trade_anterior['side'] and tempo_diferenca <= 60:
+                        resultado.append({
+                            'ticket_1': trade_anterior['ticket'],
+                            'ticket_2': trade_atual['ticket'],
+                            'pnl_1': trade_anterior['pnl'],
+                            'pnl_2': trade_atual['pnl'],
+                            'lots_1': trade_anterior['lots'],
+                            'lots_2': trade_atual['lots'],
+                            'pnl_acumulado_dia': grupo['pnl'].sum(),
+                            'symbol': trade_anterior['symbol'],
+                            'data': trade_anterior['trade-date'],
+                            'tempo_diferenca': tempo_diferenca,
+                            'side_1': trade_anterior['side'],
+                            'side_2': trade_atual['side']
+                        })
 
-            # Gráfico de volume em trades martingale
-            st.write("#### Lots vs Previous PnL for Martingale Candidates")
-            fig_martingale_patterns = px.scatter(martingale_candidates, x='prev_pnl', y='lots', 
-                                                color='symbol', color_continuous_scale='viridis',
-                                                title='Lots vs Previous PnL for Martingale Candidates',
-                                                labels={'prev_pnl': 'Previous PnL', 'lots': 'Current Lots'},
-                                                template='plotly_dark')
-            st.plotly_chart(fig_martingale_patterns)
+                return pd.DataFrame(resultado)
+        martingale_trades = df.groupby(['TradeDay', 'symbol'], group_keys=False).apply(identificar_martingale).reset_index(drop=True)
+        if martingale_trades.empty:
+            st.dataframe(martingale_trades)
+            st.write("We don't have a martingale object here")
+        else:
+            st.dataframe(martingale_trades)
+            st.write("""
+### How to Interpret the Results
+1. **Tickets and PnL (Profit and Loss):** The ticket_1 and ticket_2 columns show the trade IDs, while pnl_1 and pnl_2 show the profit or loss from each trade. A loss in pnl_1 followed by a trade with pnl_2 indicates that the trader might be using a Martingale strategy.
 
-            st.write("**If you prefer to filter the data from a specific date, please select below.**")
-            start_date = st.date_input("Start Date", value=pd.to_datetime(df['trade-date']).min().date())
-            end_date = st.date_input("End Date", value=pd.to_datetime(df['trade-date']).max().date())
-            start_date = pd.to_datetime(start_date).tz_localize('America/New_York')
-            end_date = pd.to_datetime(end_date).tz_localize('America/New_York')
-            filtered_df = df.loc[(df['trade-date'] >= start_date) & (df['trade-date'] <= end_date)]
-            st.dataframe(filtered_df)
-            st.markdown('---')
-           
+2. **Lots:** The lots_1 and lots_2 columns display the size of each trade. In many Martingale patterns, the second trade (which aims to recover losses) may involve larger positions (lots_2 > lots_1).
 
+3. **Time Difference:** The tempo_diferenca column shows the time difference between the two trades. A short time interval (e.g., less than 60 seconds) can suggest that the trader reacted quickly after the loss, which is characteristic of Martingale behavior.
+
+4. **Symbol and Date:** These columns help track the specific asset (symbol) and the day (data) when the trades occurred. They give context to when and in which instruments the Martingale pattern might be happening.
+
+5. **Cumulative PnL:** The pnl_acumulado_dia column shows the total profit or loss for the entire day for that symbol. This helps assess whether the trader is successfully recovering losses or if the Martingale strategy is amplifying the losses.
+
+### Key Insights
+- **Risky Behavior:** A consistent Martingale pattern can indicate risky behavior since increasing position sizes to recover losses may lead to larger and unsustainable risks.
+- **Potential Gambling Patterns:** If many such trades occur, it may suggest the trader is not following a robust trading strategy but is instead relying on luck or high-risk methods.
+""")
+
+
+               
 
 if __name__ == '__main__':
     main()
